@@ -96,7 +96,7 @@ while :; do
     dormant "reached max_bumps=${MAX_BUMPS}; letting the cache go cold"
   fi
 
-  echo "[keepwarm] cache keepalive — reply with one period, nothing else."
+  echo "[keepwarm] cache keepalive - reply with one period, nothing else."
   bumps=$((bumps + 1))
   log "bump ${bumps} after $(( idle / 60 ))m idle"
 

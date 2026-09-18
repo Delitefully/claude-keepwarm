@@ -3,7 +3,7 @@ import type { Register, Timer } from 'claude-code'
 // The keepalive turn. The engine frames a plugin's prompt before drawing it, so
 // the marker, not the whole string, is what the render hook matches on.
 const MARKER = '[keepwarm]'
-const PING = `${MARKER} cache keepalive — reply with one period, nothing else.`
+const PING = `${MARKER} cache keepalive - reply with one period, nothing else.`
 
 const DEFAULTS = {
   idleMinutes: 50,
