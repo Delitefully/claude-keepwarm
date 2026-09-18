@@ -96,8 +96,8 @@ const settle = async ($: any, wasOurs: boolean, usage: any): Promise<void> => {
 }
 
 export const register: Register = (on) => {
-  on('session.start', ($, e, next) => {
-    void start($)
+  on('session.start', async ($, e, next) => {
+    await start($)
     return next(e)
   })
 
@@ -107,10 +107,15 @@ export const register: Register = (on) => {
   })
 
   // Draw the keepalive exchange as empty rows. The rewrite is display-only: the
-  // stored messages, and what the model reads, are untouched. Both hooks match
-  // on the row's own text, so a redraw or a scroll hides it again.
-  on('ui.render', { component: 'UserMessage' }, ($, e, next) =>
-    e.props.text.includes(MARKER) ? next({ ...e, props: { ...e.props, text: '' } }) : next(e),
+  // stored messages, and what the model reads, are untouched. Both hooks match on
+  // what the row itself carries, so a redraw or a scroll hides it again.
+  //
+  // ctrl+o is the view that shows everything, so the row passes through there.
+  on(
+    'ui.render',
+    { component: 'UserMessage', props: { origin: { kind: 'plugin', name: 'keepwarm' } } },
+    ($, e, next) =>
+      e.props.isExpanded ? next(e) : next({ ...e, props: { ...e.props, text: '' } }),
   )
 
   on('ui.render', { component: 'AssistantMessage' }, ($, e, next) =>

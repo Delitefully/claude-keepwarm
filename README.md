@@ -54,16 +54,24 @@ drives.
 
 ## What each bump leaves on screen
 
-The reply `.` is blanked by a bundled `MessageDisplay` hook. The ping row is
-not. Measured against Claude Code 2.1.275, the engine draws a plugin-submitted
-prompt with its own framing, and no `ui.render` event carries that row, so no
-hook can blank it. Each bump leaves two visible lines:
+The reply `.` is blanked. The ping row is not, and the reason is worth knowing
+if you write hooks yourself: the engine skips a plugin's own `ui.render` hooks
+for a row that plugin's own code raised. Running under `claude --debug` says so
+outright:
+
+    hooks module keepwarm ui.render skipped: re-entry
+    (the plugin's own code raised it; origin keepwarm)
+
+So the row is a real `UserMessage` render site, stamped
+`origin: { kind: 'plugin', name: 'keepwarm' }`, and any other plugin could blank
+it. keepwarm cannot blank its own. The hook is in `hooks/keepwarm.ts` anyway,
+matched on that origin, because it costs nothing and re-entry is a rule about
+who raised the event rather than about the row.
+
+Each bump therefore leaves two lines:
 
     > The keepwarm plugin sent a message:
       [keepwarm] cache keepalive - reply with one period, nothing else.
-
-A `UserMessage` render hook is already in `hooks/keepwarm.ts` and will blank
-that row if a later release routes it through `ui.render`.
 
 ## Why it stops after 8 bumps
 

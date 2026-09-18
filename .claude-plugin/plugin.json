@@ -1,7 +1,7 @@
 {
   "name": "keepwarm",
   "description": "Keeps an idle session's prompt cache warm so the next message you type reads from cache instead of paying a full cache write.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "experimental": {
     "monitors": "./monitors/monitors.json"
   },
