@@ -115,6 +115,15 @@ another process rebuilds the prefix rather than sharing it. Running the same
 bump twice showed it is self-consistent (the second one read 54,300, created 0):
 it warms its own cache entry, not the session's.
 
+## The monitor stays alive after it stops bumping
+
+When the shell monitor has nothing left to do, it goes dormant rather than
+exiting, because a monitor that exits makes Claude Code announce it, and that
+announcement costs a turn in the transcript. The cost of staying is that quitting
+the session lists it under "Background work is running" as `prompt-cache
+keepalive`. It stops with the session either way. A startup turn in every
+transcript seemed the worse of the two.
+
 ## A keepalive is a real turn
 
 If the session has a `/goal` set, or a `Stop` hook that forces continuation,
