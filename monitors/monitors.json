@@ -1,0 +1,7 @@
+[
+  {
+    "name": "keepwarm",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/keepwarm.sh",
+    "description": "prompt-cache keepalive"
+  }
+]
