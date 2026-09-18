@@ -27,38 +27,37 @@ back to `warm 59m27s (1h)`.
     claude plugin install keepwarm-bundle@keepwarm
 
 `keepwarm-bundle` is a manifest with nothing but a dependency list, so installing
-it pulls in both plugins:
+it pulls in the two plugins you want:
 
 | | |
 |---|---|
-| `keepwarm` | the keepalive itself |
+| `keepwarm` | the keepalive, as a function-hooks mod |
 | `keepwarm-quiet` | blanks the rows the keepalive leaves in the transcript |
 
-Install `keepwarm` alone if you would rather see the rows.
-
-The mod needs function hooks turned on. Add this to `~/.claude/settings.json`:
+Both need function hooks. Add this to `~/.claude/settings.json`:
 
     { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
-
-Without that flag `keepwarm` falls back to a shell monitor that does the same
-job. `keepwarm-quiet` is a mod only, so it needs the flag.
 
 Kill switch for every session at once: `touch ~/.claude/keepwarm-off`.
 To stop loading them: `claude plugin disable keepwarm-bundle@keepwarm`.
 
-## Two implementations of the keepalive
+### If you cannot turn function hooks on
 
-| | Mod (`hooks/keepwarm.ts`) | Shell monitor (`scripts/keepwarm.sh`) |
-|---|---|---|
-| Needs | `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` | nothing |
-| Timer | `$.clock.every` | `sleep` loop |
-| Ping | `$.prompt.submit` | monitor stdout |
-| Size gate | `$.session.usage()` context tokens | transcript bytes |
+`keepwarm-shell` does the same job with a background monitor on a sleep loop, and
+needs no flag:
 
-The mod is a TypeScript function-hooks module. Function hooks are early access,
-so that API can change between releases. The monitor works without the flag.
-They interlock: when function hooks are on, the monitor stands down and the mod
-drives.
+    claude plugin install keepwarm-shell@keepwarm
+
+It is a separate plugin because a monitor is a process that lives as long as the
+session, so Claude Code counts it in the footer and lists it when you quit under
+"Background work is running". The mod needs no process, so a session running
+`keepwarm` shows nothing at all. Install one or the other. With both installed
+and function hooks on, the monitor stands down and lets the mod drive.
+
+`keepwarm-shell` reads `~/.claude/keepwarm/config.env` rather than the
+environment, because a background session's monitor never sees your shell. It
+logs each bump to `~/.claude/keepwarm/keepwarm.log`, and `/keepwarm` reports the
+last few.
 
 ## Why blanking the row takes a second plugin
 
@@ -81,32 +80,46 @@ read them, which is the point: the cached prefix has to stay exactly as it was.
 By default it quiets `keepwarm`. Set `KEEPWARM_QUIET_PLUGINS` to a comma
 separated list of plugin names to quiet others.
 
+## The two mechanisms
+
+| | `keepwarm` | `keepwarm-shell` |
+|---|---|---|
+| Needs | `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` | nothing |
+| Background process | none | one, for the session's life |
+| Timer | `$.clock.every` | `sleep` loop |
+| Ping | `$.prompt.submit` | monitor stdout |
+| Size gate | `$.session.usage()` context tokens | transcript bytes |
+| Safety valve | stops if a bump writes more than it reads | same, read from the transcript |
+| Kill switch | `~/.claude/keepwarm-off` | same |
+
+`keepwarm` is a TypeScript function-hooks module. Function hooks are early
+access, so that API can change between releases.
+
 ## Why it stops after 8 bumps
 
 A bump costs a cache read of the whole conversation every interval. That is a
 good trade if you come back and a bad one if you do not, so keepwarm stops after
 `KEEPWARM_MAX_BUMPS` (default 8, about 8 hours) and lets the cache go cold.
 
-Both implementations also stop if a bump ever writes more than it reads. A
+Both mechanisms also stop if a bump ever writes more than it reads. A
 keepalive that writes is warming nothing and would rebill that write every
 interval.
 
 ## Configure
 
-The mod reads environment variables. The shell monitor reads
+`keepwarm` reads environment variables, so set them in your shell or in the
+`env` block of `~/.claude/settings.json`. `keepwarm-shell` reads
 `~/.claude/keepwarm/config.env` instead, because a background session's monitor
-does not inherit the launching shell's environment. See `config.env.example`.
+does not inherit the launching shell's environment. See its `config.env.example`.
 
 | | default | |
 |---|---|---|
 | `KEEPWARM_INTERVAL_MIN` | 50 | idle minutes before a bump. Keep it under your TTL |
 | `KEEPWARM_MAX_BUMPS` | 8 | bumps before it lets the cache go cold |
-| `KEEPWARM_MIN_CONTEXT_TOKENS` | 20000 | mod only: do not warm a context smaller than this |
-| `KEEPWARM_MIN_TRANSCRIPT_KB` | 150 | monitor only: the same gate, in transcript bytes |
-| `KEEPWARM_DISABLE` | | monitor only: `1` turns it off |
-
-The monitor logs each bump and its cache figures to
-`~/.claude/keepwarm/keepwarm.log`. `/keepwarm` reports the last few.
+| `KEEPWARM_MIN_CONTEXT_TOKENS` | 20000 | `keepwarm` only: do not warm a context smaller than this |
+| `KEEPWARM_MIN_TRANSCRIPT_KB` | 150 | `keepwarm-shell` only: the same gate, in transcript bytes |
+| `KEEPWARM_DISABLE` | | `keepwarm-shell` only: `1` turns it off |
+| `KEEPWARM_QUIET_PLUGINS` | keepwarm | `keepwarm-quiet` only: which plugins' rows to blank |
 
 ## Why the keepalive has to happen inside the session
 
@@ -118,14 +131,13 @@ another process rebuilds the prefix rather than sharing it. Running the same
 bump twice showed it is self-consistent (the second one read 54,300, created 0):
 it warms its own cache entry, not the session's.
 
-## The monitor stays alive after it stops bumping
+## keepwarm-shell's monitor stays alive after it stops bumping
 
-When the shell monitor has nothing left to do, it goes dormant rather than
-exiting, because a monitor that exits makes Claude Code announce it, and that
-announcement costs a turn in the transcript. The cost of staying is that quitting
-the session lists it under "Background work is running" as `prompt-cache
-keepalive`. It stops with the session either way. A startup turn in every
-transcript seemed the worse of the two.
+When the monitor has nothing left to do it goes dormant rather than exiting,
+because a monitor that exits makes Claude Code announce it, and that announcement
+costs a turn in the transcript. The cost of staying is the footer count and the
+line under "Background work is running" when you quit. Neither can be turned off,
+which is the reason `keepwarm` does not ship a monitor at all.
 
 ## A keepalive is a real turn
 

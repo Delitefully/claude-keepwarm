@@ -1,16 +1,1 @@
-{
-  "modules": ["./keepwarm.ts"],
-  "hooks": {
-    "MessageDisplay": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hide-bump-reply.sh",
-            "args": []
-          }
-        ]
-      }
-    ]
-  }
-}
+{ "modules": ["./keepwarm.ts"] }

@@ -33,8 +33,29 @@ dormant() {
 }
 
 [ "${KEEPWARM_DISABLE:-0}" = "1" ] && dormant "disabled by KEEPWARM_DISABLE"
-# With function hooks on, the mod drives the keepalive and this monitor stands down.
-[ "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-0}" = "1" ] && dormant "function hooks are on; the mod drives this"
+
+# Stand down only when the mod can actually run: function hooks on AND the
+# keepwarm plugin installed. The flag alone says nothing, since it may have been
+# turned on for somebody else's plugin.
+mod_is_driving() {
+  [ "${CLAUDE_CODE_ENABLE_FUNCTION_HOOKS:-0}" = "1" ] || return 1
+  python3 - <<'EOPY' 2>/dev/null
+import json, pathlib, sys
+for name in ("settings.json", "settings.local.json"):
+    f = pathlib.Path.home() / ".claude" / name
+    if not f.exists():
+        continue
+    try:
+        enabled = json.loads(f.read_text()).get("enabledPlugins", {})
+    except Exception:
+        continue
+    for key, on in enabled.items():
+        if key.split("@")[0] == "keepwarm" and on:
+            sys.exit(0)
+sys.exit(1)
+EOPY
+}
+mod_is_driving && dormant "the keepwarm mod is installed and drives this"
 [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || dormant "no CLAUDE_CODE_SESSION_ID"
 
 TRANSCRIPT=""

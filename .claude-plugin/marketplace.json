@@ -20,6 +20,11 @@
       "name": "keepwarm-quiet",
       "source": "./plugins/keepwarm-quiet",
       "description": "Blanks the transcript rows the keepalive leaves behind."
+    },
+    {
+      "name": "keepwarm-shell",
+      "source": "./plugins/keepwarm-shell",
+      "description": "The keepalive without function hooks, as a background monitor. Only for sessions that cannot run the mod."
     }
   ]
 }

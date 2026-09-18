@@ -1,7 +1,10 @@
 {
   "name": "keepwarm-quiet",
   "description": "Blanks the rows a keepalive plugin leaves in the transcript. A plugin cannot blank a row its own code raised, so this is a second plugin.",
-  "version": "0.2.0",
-  "author": { "name": "Gabriel (delitefully)", "email": "git@delite.dev" },
+  "version": "0.3.0",
+  "author": {
+    "name": "Gabriel (delitefully)",
+    "email": "git@delite.dev"
+  },
   "homepage": "https://github.com/Delitefully/claude-keepwarm"
 }

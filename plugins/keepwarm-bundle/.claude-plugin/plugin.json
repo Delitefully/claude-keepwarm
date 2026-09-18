@@ -1,8 +1,14 @@
 {
   "name": "keepwarm-bundle",
   "description": "Installs keepwarm and keepwarm-quiet together: the keepalive, and the second plugin that blanks the rows it leaves.",
-  "version": "0.2.0",
-  "author": { "name": "Gabriel (delitefully)", "email": "git@delite.dev" },
+  "version": "0.3.0",
+  "author": {
+    "name": "Gabriel (delitefully)",
+    "email": "git@delite.dev"
+  },
   "homepage": "https://github.com/Delitefully/claude-keepwarm",
-  "dependencies": ["keepwarm", "keepwarm-quiet"]
+  "dependencies": [
+    "keepwarm",
+    "keepwarm-quiet"
+  ]
 }

@@ -1,0 +1,8 @@
+{
+  "name": "keepwarm-shell",
+  "description": "The keepalive without function hooks: a background monitor that pings the session on a sleep loop. Install this only if you cannot turn function hooks on.",
+  "version": "0.3.0",
+  "author": { "name": "Gabriel (delitefully)", "email": "git@delite.dev" },
+  "homepage": "https://github.com/Delitefully/claude-keepwarm",
+  "experimental": { "monitors": "./monitors/monitors.json" }
+}
