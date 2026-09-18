@@ -1,11 +1,10 @@
 {
   "name": "keepwarm",
   "description": "Keeps an idle session's prompt cache warm so the next message you type reads from cache instead of paying a full cache write.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "experimental": {
     "monitors": "./monitors/monitors.json"
   },
-  "hooks": "./hooks/hooks.json",
   "author": {
     "name": "Gabriel (delitefully)",
     "email": "git@delite.dev"

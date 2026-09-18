@@ -10,5 +10,6 @@
       "source": "./",
       "description": "Keeps an idle session's prompt cache warm so the next message you type reads from cache instead of paying a full cache write."
     }
-  ]
+  ],
+  "description": "One plugin that keeps an idle Claude Code session's prompt cache warm."
 }
