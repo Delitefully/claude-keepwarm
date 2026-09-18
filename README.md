@@ -1,4 +1,7 @@
-# keepwarm
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-lockup-dark.png">
+  <img src="assets/logo-lockup.png" alt="keepwarm" width="420">
+</picture>
 
 Two Claude Code plugins that keep an idle session's prompt cache warm, so the
 next message you type reads the conversation from cache instead of paying to
