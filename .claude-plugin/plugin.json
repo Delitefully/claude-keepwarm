@@ -7,6 +7,8 @@
   },
   "hooks": "./hooks/hooks.json",
   "author": {
-    "name": "Gabriel Lein"
-  }
+    "name": "Gabriel (delitefully)",
+    "email": "git@delite.dev"
+  },
+  "homepage": "https://github.com/Delitefully/claude-keepwarm"
 }
