@@ -1,0 +1,14 @@
+{
+  "name": "keepwarm",
+  "owner": {
+    "name": "Gabriel (delitefully)",
+    "url": "https://github.com/Delitefully"
+  },
+  "plugins": [
+    {
+      "name": "keepwarm",
+      "source": "./",
+      "description": "Keeps an idle session's prompt cache warm so the next message you type reads from cache instead of paying a full cache write."
+    }
+  ]
+}
