@@ -6,7 +6,8 @@ const MARKER = '[keepwarm]'
 const PING = `${MARKER} cache keepalive - reply with one period, nothing else.`
 
 const DEFAULTS = {
-  idleMinutes: 50,
+  idleMinutes: 45,
+  ttlMinutes: 60,
   maxBumps: 8,
   minContextTokens: 20_000,
   pollSeconds: 60,
@@ -16,6 +17,9 @@ let config = DEFAULTS
 let lastActivityAt = 0
 let bumps = 0
 let awaitingReply = false
+// Set when a tick found the cache already expired. The next real turn rebuilds
+// the cache, so ticks resume after it rather than stopping for good.
+let coldUntilNextTurn = false
 let stopped = false
 let timer: Timer | null = null
 
@@ -37,10 +41,20 @@ const stop = async ($: any, why: string): Promise<void> => {
 // so the timer body lives here rather than inside register().
 const tick = async ($: any): Promise<void> => {
   // A turn is running, or our own bump has not come back yet.
-  if (stopped || awaitingReply) return
+  if (stopped || awaitingReply || coldUntilNextTurn) return
 
   const now = await $.clock.now()
-  if (now - lastActivityAt < config.idleMinutes * 60_000) return
+  const idleMinutes = (now - lastActivityAt) / 60_000
+  if (idleMinutes < config.idleMinutes) return
+
+  // The timer does not run while the machine sleeps, and a draft in the prompt
+  // box defers every tick, so a bump can arrive after the cache already expired.
+  // Past the TTL a bump cannot touch anything; it would only rebuild the cache.
+  if (idleMinutes >= config.ttlMinutes) {
+    coldUntilNextTurn = true
+    await $.ui.log(`idle ${Math.round(idleMinutes)}m, past the ${config.ttlMinutes}m cache TTL; the cache is already cold, not bumping until the next turn rebuilds it`)
+    return
+  }
 
   if (bumps >= config.maxBumps) {
     await stop($, `reached ${config.maxBumps} bumps; letting the cache go cold`)
@@ -73,6 +87,7 @@ const tick = async ($: any): Promise<void> => {
 const start = async ($: any): Promise<void> => {
   config = {
     idleMinutes: number(await $.env.get('KEEPWARM_INTERVAL_MIN'), DEFAULTS.idleMinutes),
+    ttlMinutes: number(await $.env.get('KEEPWARM_TTL_MIN'), DEFAULTS.ttlMinutes),
     maxBumps: number(await $.env.get('KEEPWARM_MAX_BUMPS'), DEFAULTS.maxBumps),
     minContextTokens: number(await $.env.get('KEEPWARM_MIN_CONTEXT_TOKENS'), DEFAULTS.minContextTokens),
     pollSeconds: number(await $.env.get('KEEPWARM_POLL_SEC'), DEFAULTS.pollSeconds),
@@ -86,13 +101,16 @@ const start = async ($: any): Promise<void> => {
 const settle = async ($: any, wasOurs: boolean, usage: any): Promise<void> => {
   lastActivityAt = await $.clock.now()
   awaitingReply = false
+  coldUntilNextTurn = false
   if (!wasOurs || !usage) return
   const read = usage.cache_read_input_tokens ?? 0
   const created = usage.cache_creation_input_tokens ?? 0
-  await $.ui.log(`bump ${bumps} read ${read}, created ${created}`)
-  // A keepalive that writes more than it reads is warming nothing, and would
-  // bill that write again every interval.
-  if (created > read) await stop($, 'a bump wrote more than it read; not repeating it')
+  await $.ui.log(`bump ${bumps}: cache read ${read} tokens, cache created ${created} tokens`)
+  // A keepalive that creates more cache than it reads found the cache cold and
+  // rebuilt it, warming nothing; repeating it would bill that write every interval.
+  if (created > read) {
+    await stop($, `bump ${bumps} rebuilt the cache (read ${read}, created ${created} tokens) instead of touching it; stopping`)
+  }
 }
 
 export const register: Register = (on) => {

@@ -15,7 +15,7 @@ a cache read: a 1h cache write bills at 2x base input, a cache read at about
 0.1x.
 
 keepwarm spends one read to avoid one write. After the session has been idle for
-`KEEPWARM_INTERVAL_MIN` (default 50) it submits one line asking Claude for a
+`KEEPWARM_INTERVAL_MIN` (default 45) it submits one line asking Claude for a
 single period. That request re-reads the cached prefix and resets the TTL.
 Measured in a real terminal session: the keepalive turn read 50,348 tokens from
 cache, wrote 91, produced 3 output tokens, and Claude Code's status line went
@@ -89,7 +89,7 @@ separated list of plugin names to quiet others.
 | Timer | `$.clock.every` | `sleep` loop |
 | Ping | `$.prompt.submit` | monitor stdout |
 | Size gate | `$.session.usage()` context tokens | transcript bytes |
-| Safety valve | stops if a bump writes more than it reads | same, read from the transcript |
+| Safety valve | skips a bump past `KEEPWARM_TTL_MIN`; stops if a bump still creates more cache than it reads | same, read from the transcript |
 | Kill switch | `~/.claude/keepwarm-off` | same |
 
 `keepwarm` is a TypeScript function-hooks module. Function hooks are early
@@ -101,9 +101,17 @@ A bump costs a cache read of the whole conversation every interval. That is a
 good trade if you come back and a bad one if you do not, so keepwarm stops after
 `KEEPWARM_MAX_BUMPS` (default 8, about 8 hours) and lets the cache go cold.
 
-Both mechanisms also stop if a bump ever writes more than it reads. A
-keepalive that writes is warming nothing and would rebill that write every
-interval.
+Both mechanisms also stop if a bump ever creates more cache than it reads
+(`cache_creation_input_tokens` above `cache_read_input_tokens` on the reply).
+That means the cache was already cold and the bump rebuilt it, warming nothing;
+repeating it would rebill that write every interval.
+
+A bump can be late. The timer does not run while the machine sleeps, and a
+draft sitting in the prompt box defers every tick, so a bump due at 45 minutes
+can land after the hour. Past `KEEPWARM_TTL_MIN` the cache is already cold and a
+bump can only write, so both mechanisms skip it instead of paying for the
+rebuild, and resume once your next message has rebuilt the cache. The 15 minute gap between the default interval and the TTL is the
+slack for those deferrals.
 
 ## Configure
 
@@ -114,7 +122,8 @@ does not inherit the launching shell's environment. See its `config.env.example`
 
 | | default | |
 |---|---|---|
-| `KEEPWARM_INTERVAL_MIN` | 50 | idle minutes before a bump. Keep it under your TTL |
+| `KEEPWARM_INTERVAL_MIN` | 45 | idle minutes before a bump. Keep it under your TTL, with room for a late tick |
+| `KEEPWARM_TTL_MIN` | 60 | your prompt-cache TTL. A bump this late is skipped, since the cache is already cold |
 | `KEEPWARM_MAX_BUMPS` | 8 | bumps before it lets the cache go cold |
 | `KEEPWARM_MIN_CONTEXT_TOKENS` | 20000 | `keepwarm` only: do not warm a context smaller than this |
 | `KEEPWARM_MIN_TRANSCRIPT_KB` | 150 | `keepwarm-shell` only: the same gate, in transcript bytes |

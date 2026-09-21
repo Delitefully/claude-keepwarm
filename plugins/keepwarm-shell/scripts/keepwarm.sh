@@ -13,7 +13,8 @@ CONFIG="${KEEPWARM_CONFIG:-$HOME/.claude/keepwarm/config.env}"
 # shellcheck source=/dev/null
 [ -f "$CONFIG" ] && . "$CONFIG"
 
-INTERVAL_MIN="${KEEPWARM_INTERVAL_MIN:-50}"
+INTERVAL_MIN="${KEEPWARM_INTERVAL_MIN:-45}"
+TTL_MIN="${KEEPWARM_TTL_MIN:-60}"
 MAX_BUMPS="${KEEPWARM_MAX_BUMPS:-8}"
 MIN_TRANSCRIPT_KB="${KEEPWARM_MIN_TRANSCRIPT_KB:-150}"
 POLL_SEC="${KEEPWARM_POLL_SEC:-60}"
@@ -94,8 +95,11 @@ PY
 
 size_kb() { echo $(( $(stat -f %z "$TRANSCRIPT" 2>/dev/null || stat -c %s "$TRANSCRIPT" 2>/dev/null) / 1024 )); }
 
-log "started: interval=${INTERVAL_MIN}m max_bumps=${MAX_BUMPS} transcript=${TRANSCRIPT##*/}"
+log "started: interval=${INTERVAL_MIN}m ttl=${TTL_MIN}m max_bumps=${MAX_BUMPS} transcript=${TRANSCRIPT##*/}"
 bumps=0
+# The last_ts a past-TTL skip was logged for, so the skip is logged once per
+# cold stretch rather than every poll, and bumps resume after the next real turn.
+cold_ts=0
 while :; do
   sleep "$POLL_SEC"
 
@@ -108,6 +112,15 @@ while :; do
   [ -n "${last_ts:-}" ] && [ "${last_ts:-0}" -gt 0 ] 2>/dev/null || continue
   idle=$(( $(date +%s) - last_ts ))
   (( idle < INTERVAL_MIN * 60 )) && continue
+  # The loop does not run while the machine sleeps, so a bump can arrive after the
+  # cache already expired. Past the TTL it cannot touch anything, only rebuild.
+  if (( idle >= TTL_MIN * 60 )); then
+    if [ "$cold_ts" != "$last_ts" ]; then
+      cold_ts=$last_ts
+      log "idle $(( idle / 60 ))m, past the ${TTL_MIN}m cache TTL; the cache is already cold, not bumping until the next turn rebuilds it"
+    fi
+    continue
+  fi
 
   kb=$(size_kb)
   if (( kb < MIN_TRANSCRIPT_KB )); then
@@ -124,11 +137,11 @@ while :; do
   sleep 45
   read -r new_ts r c <<<"$(state)"
   if [ "${new_ts:-0}" -gt "$last_ts" ] 2>/dev/null; then
-    log "  -> cache read=${r} created=${c}"
-    # A keepalive that writes more than it reads is warming nothing, and would
-    # bill that write again every interval.
+    log "  -> cache read=${r} tokens, cache created=${c} tokens"
+    # A keepalive that creates more cache than it reads found the cache cold and
+    # rebuilt it, warming nothing; repeating it would bill that write every interval.
     if (( c > r )); then
-      dormant "  -> wrote more than it read; not repeating it"
+      dormant "  -> bump ${bumps} rebuilt the cache (read ${r}, created ${c} tokens) instead of touching it; stopping"
     fi
   else
     dormant "  -> no turn recorded; the ping did not land"
