@@ -20,7 +20,11 @@ let awaitingReply = false
 // Set when a tick found the cache already expired. The next real turn rebuilds
 // the cache, so ticks resume after it rather than stopping for good.
 let coldUntilNextTurn = false
+// Set by /keepwarm pause. Unlike a stop it keeps the timer, so resume picks up
+// where the idle clock is.
+let paused = false
 let stopped = false
+let stopReason = ''
 let timer: Timer | null = null
 
 // $.env.get takes a literal name so a module's reads can be listed, which is
@@ -30,18 +34,43 @@ const number = (raw: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
+// The status line is a separate process, so it reads the keepalive's state from
+// a file named by the session id it gets on stdin. The id is read on every
+// write because a /clear changes it without starting the module again.
+const publish = async ($: any): Promise<void> => {
+  try {
+    const home = await $.env.get('HOME')
+    if (!home) return
+    const id = await $.session.id()
+    const state = {
+      state: stopped ? 'stopped' : paused ? 'paused' : 'active',
+      cold: coldUntilNextTurn,
+      bumps,
+      maxBumps: config.maxBumps,
+      nextBumpAt: Math.ceil((lastActivityAt + config.idleMinutes * 60_000) / 1000),
+      reason: stopReason,
+      updatedAt: Math.floor((await $.clock.now()) / 1000),
+    }
+    await $.fs.write(`${home}/.claude/keepwarm/sessions/${id}.json`, `${JSON.stringify(state)}\n`)
+  } catch {
+    // The status line going stale is not worth failing a tick over.
+  }
+}
+
 const stop = async ($: any, why: string): Promise<void> => {
   stopped = true
+  stopReason = why
   timer?.cancel()
   timer = null
   await $.ui.log(why)
+  await publish($)
 }
 
 // The analyser only lets `$` reach functions declared at the top of the module,
 // so the timer body lives here rather than inside register().
 const tick = async ($: any): Promise<void> => {
   // A turn is running, or our own bump has not come back yet.
-  if (stopped || awaitingReply || coldUntilNextTurn) return
+  if (stopped || paused || awaitingReply || coldUntilNextTurn) return
 
   const now = await $.clock.now()
   const idleMinutes = (now - lastActivityAt) / 60_000
@@ -53,6 +82,7 @@ const tick = async ($: any): Promise<void> => {
   if (idleMinutes >= config.ttlMinutes) {
     coldUntilNextTurn = true
     await $.ui.log(`idle ${Math.round(idleMinutes)}m, past the ${config.ttlMinutes}m cache TTL; the cache is already cold, not bumping until the next turn rebuilds it`)
+    await publish($)
     return
   }
 
@@ -94,6 +124,45 @@ const start = async ($: any): Promise<void> => {
   }
   lastActivityAt = await $.clock.now()
   timer = $.clock.every(config.pollSeconds * 1000, () => void tick($))
+  await publish($)
+  // Refused if another plugin already serves /keepwarm; the keepalive still runs.
+  try {
+    await $.command.register({
+      name: 'keepwarm',
+      description: 'Pause, resume or report the prompt-cache keepalive for this session',
+      argumentHint: '[pause|resume|status]',
+    })
+  } catch (err) {
+    await $.ui.log(`/keepwarm not registered: ${String(err)}`)
+  }
+}
+
+const status = async ($: any): Promise<string> => {
+  const made = `${bumps} of ${config.maxBumps} bumps made`
+  if (stopped) return `stopped: ${stopReason}. ${made}.`
+  if (paused) return `paused. ${made}. /keepwarm resume turns it back on.`
+  if (coldUntilNextTurn) return `waiting: the cache went cold past the ${config.ttlMinutes}m TTL; bumps resume after your next turn. ${made}.`
+  const left = Math.max(0, Math.ceil((lastActivityAt + config.idleMinutes * 60_000 - (await $.clock.now())) / 60_000))
+  return `on, next bump in about ${left}m (after ${config.idleMinutes}m idle). ${made}.`
+}
+
+// Answering without next() runs no model turn, so the command costs nothing and
+// leaves the idle clock alone.
+const command = async ($: any, args: string): Promise<{ text: string }> => {
+  const verb = args.trim().toLowerCase()
+  if (verb === 'pause') {
+    paused = true
+    await publish($)
+    return { text: 'paused for this session. /keepwarm resume turns it back on.' }
+  }
+  if (verb === 'resume') {
+    if (stopped) return { text: `stopped (${stopReason}); it does not restart in this session.` }
+    paused = false
+    await publish($)
+    return { text: await status($) }
+  }
+  if (verb === '' || verb === 'status') return { text: await status($) }
+  return { text: 'usage: /keepwarm [pause|resume|status]' }
 }
 
 // Any completed turn restarts the idle clock. When the turn that ended was our
@@ -102,15 +171,18 @@ const settle = async ($: any, wasOurs: boolean, usage: any): Promise<void> => {
   lastActivityAt = await $.clock.now()
   awaitingReply = false
   coldUntilNextTurn = false
-  if (!wasOurs || !usage) return
-  const read = usage.cache_read_input_tokens ?? 0
-  const created = usage.cache_creation_input_tokens ?? 0
-  await $.ui.log(`bump ${bumps}: cache read ${read} tokens, cache created ${created} tokens`)
-  // A keepalive that creates more cache than it reads found the cache cold and
-  // rebuilt it, warming nothing; repeating it would bill that write every interval.
-  if (created > read) {
-    await stop($, `bump ${bumps} rebuilt the cache (read ${read}, created ${created} tokens) instead of touching it; stopping`)
+  if (wasOurs && usage) {
+    const read = usage.cache_read_input_tokens ?? 0
+    const created = usage.cache_creation_input_tokens ?? 0
+    await $.ui.log(`bump ${bumps}: cache read ${read} tokens, cache created ${created} tokens`)
+    // A keepalive that creates more cache than it reads found the cache cold and
+    // rebuilt it, warming nothing; repeating it would bill that write every interval.
+    if (created > read) {
+      await stop($, `bump ${bumps} rebuilt the cache (read ${read}, created ${created} tokens) instead of touching it; stopping`)
+      return
+    }
   }
+  await publish($)
 }
 
 export const register: Register = (on) => {
@@ -123,6 +195,8 @@ export const register: Register = (on) => {
     void settle($, awaitingReply, e.usage)
     return next(e)
   })
+
+  on('command.run', { command: 'keepwarm' }, ($, e) => command($, e.args))
 
   // Draw the keepalive exchange as empty rows. The rewrite is display-only: the
   // stored messages, and what the model reads, are untouched. Both hooks match on

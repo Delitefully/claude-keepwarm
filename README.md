@@ -38,7 +38,8 @@ Both need function hooks. Add this to `~/.claude/settings.json`:
 
     { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1" } }
 
-Kill switch for every session at once: `touch ~/.claude/keepwarm-off`.
+To pause it in one session: `/keepwarm pause`, and `/keepwarm resume` to turn it
+back on. Kill switch for every session at once: `touch ~/.claude/keepwarm-off`.
 To stop loading them: `claude plugin disable keepwarm-bundle@keepwarm`.
 
 ### If you cannot turn function hooks on
@@ -58,6 +59,45 @@ and function hooks on, the monitor stands down and lets the mod drive.
 environment, because a background session's monitor never sees your shell. It
 logs each bump to `~/.claude/keepwarm/keepwarm.log`, and `/keepwarm` reports the
 last few.
+
+## Pausing it, and your status line
+
+`keepwarm` registers `/keepwarm`:
+
+| | |
+|---|---|
+| `/keepwarm` | whether it is on, paused, waiting or stopped, and when the next bump is due |
+| `/keepwarm pause` | no bumps in this session until you resume |
+| `/keepwarm resume` | back on, from the same idle clock |
+
+The command answers locally, so it runs no model turn and does not reset the
+idle clock. A pause lasts for the session. It is not the kill switch: a pause
+keeps the timer and the bump count, and resuming cannot restart a keepalive
+that has already stopped.
+
+A status line runs as its own process and cannot ask the plugin anything, so
+`keepwarm` writes its state to `~/.claude/keepwarm/sessions/<session id>.json`
+whenever it changes:
+
+    {"state":"active","cold":false,"bumps":2,"maxBumps":8,"nextBumpAt":1790150371,"reason":"","updatedAt":1790147672}
+
+`state` is `active`, `paused` or `stopped`, `cold` means it is waiting for your
+next turn to rebuild the cache, `nextBumpAt` is epoch seconds, and `reason` says
+why it stopped. A status line command gets `session_id` on stdin, so it can pick
+out its own session's file:
+
+    sid=$(printf '%s' "$input" | jq -r '.session_id // empty')
+    f="$HOME/.claude/keepwarm/sessions/$sid.json"
+    [ -n "$sid" ] && [ -f "$f" ] && jq -r --argjson now "$(date +%s)" '
+      if .state == "active" then
+        "kw \(.bumps)/\(.maxBumps) " + (if .cold then "waiting"
+          else ((.nextBumpAt - $now) as $s | if $s <= 0 then "due" else "next \((($s + 59) / 60) | floor)m" end) end)
+      elif .state == "paused" then "kw paused" else "kw off" end' "$f"
+
+That prints `kw 2/8 next 31m`, `kw paused` or `kw off`. The status line only
+redraws on its own schedule, so set `refreshInterval` in `statusLine` if you
+want a pause to show within the minute rather than at the next turn. The files
+are not removed when a session ends; each is one line.
 
 ## Why blanking the row takes a second plugin
 
@@ -91,6 +131,8 @@ separated list of plugin names to quiet others.
 | Size gate | `$.session.usage()` context tokens | transcript bytes |
 | Safety valve | skips a bump past `KEEPWARM_TTL_MIN`; stops if a bump still creates more cache than it reads | same, read from the transcript |
 | Kill switch | `~/.claude/keepwarm-off` | same |
+| Pause | `/keepwarm pause` for one session | none; `KEEPWARM_DISABLE=1` or the kill switch |
+| Status line | `~/.claude/keepwarm/sessions/<id>.json` | none; `/keepwarm` reads the log |
 
 `keepwarm` is a TypeScript function-hooks module. Function hooks are early
 access, so that API can change between releases.
