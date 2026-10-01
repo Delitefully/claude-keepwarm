@@ -1,6 +1,6 @@
 {
   "name": "keepwarm",
-  "description": "A prompt-cache keepalive for idle Claude Code sessions, and the plugin that keeps it quiet.",
+  "description": "A prompt-cache keepalive for idle Claude Code sessions that leaves nothing on screen.",
   "owner": {
     "name": "Gabriel (delitefully)",
     "url": "https://github.com/Delitefully"
@@ -9,17 +9,12 @@
     {
       "name": "keepwarm-bundle",
       "source": "./plugins/keepwarm-bundle",
-      "description": "Install this one: it pulls in keepwarm and keepwarm-quiet."
+      "description": "Kept for existing installs: it pulls in keepwarm. Install keepwarm directly."
     },
     {
       "name": "keepwarm",
       "source": "./plugins/keepwarm",
       "description": "Keeps an idle session's prompt cache warm so the next message you type reads from cache instead of paying a full cache write."
-    },
-    {
-      "name": "keepwarm-quiet",
-      "source": "./plugins/keepwarm-quiet",
-      "description": "Blanks the transcript rows the keepalive leaves behind."
     },
     {
       "name": "keepwarm-shell",

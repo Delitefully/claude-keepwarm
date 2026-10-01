@@ -1,9 +1,9 @@
 import type { Register, Timer } from 'claude-code'
 
-// The keepalive turn. The engine frames a plugin's prompt before drawing it, so
-// the marker, not the whole string, is what the render hook matches on.
-const MARKER = '[keepwarm]'
-const PING = `${MARKER} cache keepalive - reply with one period, nothing else.`
+// The keepalive request. $.model.fork re-sends the main thread's last request
+// with this one message after it, so the API serves everything before it from
+// the session's own cache entry. Nothing is appended to the transcript.
+const PING = '[keepwarm] cache keepalive - reply with one period, nothing else.'
 
 const DEFAULTS = {
   idleMinutes: 45,
@@ -13,12 +13,20 @@ const DEFAULTS = {
   pollSeconds: 60,
 }
 
+// Consecutive bumps that came back with an API error before it gives up.
+const MAX_ERRORS = 3
+
 let config = DEFAULTS
 let lastActivityAt = 0
 let bumps = 0
-let awaitingReply = false
-// Set when a tick found the cache already expired. The next real turn rebuilds
-// the cache, so ticks resume after it rather than stopping for good.
+let errors = 0
+let lastBumpAt = 0
+// A main-thread turn is running, so the cache is in use without us.
+let busy = false
+let bumping = false
+// Set when a tick found the cache already expired, or when the last request
+// the fork would replay no longer matches the conversation (a compaction).
+// The next real turn sends a fresh request, so ticks resume after it.
 let coldUntilNextTurn = false
 // Set by /keepwarm pause. Unlike a stop it keeps the timer, so resume picks up
 // where the idle clock is.
@@ -48,6 +56,7 @@ const publish = async ($: any): Promise<void> => {
       bumps,
       maxBumps: config.maxBumps,
       nextBumpAt: Math.ceil((lastActivityAt + config.idleMinutes * 60_000) / 1000),
+      lastBumpAt: Math.floor(lastBumpAt / 1000),
       reason: stopReason,
       updatedAt: Math.floor((await $.clock.now()) / 1000),
     }
@@ -57,31 +66,89 @@ const publish = async ($: any): Promise<void> => {
   }
 }
 
+// Every line goes to the debug log, not the transcript: the status line and
+// /keepwarm are where the keepalive shows itself.
+const note = async ($: any, line: string): Promise<void> => {
+  await $.ui.log(line, { to: 'debug' })
+}
+
 const stop = async ($: any, why: string): Promise<void> => {
   stopped = true
   stopReason = why
   timer?.cancel()
   timer = null
-  await $.ui.log(why)
+  await note($, why)
   await publish($)
+}
+
+// The engine gives a fork the 5m cache TTL whatever the main thread uses,
+// because forks are not on its 1h list. A fork still reads the 1h entry, but
+// whether a 5m read extends a 1h entry by an hour is the API's business, and
+// any tail it writes would live 5m. The subagent TTL variable is read per
+// request, so it is set for this one request and put back after.
+const fork = async ($: any): Promise<any> => {
+  if (config.ttlMinutes < 60) return $.model.fork({ prompt: PING })
+  const before = await $.env.get('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL')
+  await $.env.set('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL', '1h')
+  try {
+    return await $.model.fork({ prompt: PING })
+  } finally {
+    await $.env.set('CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL', before)
+  }
+}
+
+const bump = async ($: any): Promise<void> => {
+  bumping = true
+  try {
+    const r = await fork($)
+    if (!('usage' in r)) {
+      // nothing-to-fork: no main-thread request since a /clear or a resume.
+      coldUntilNextTurn = true
+      await note($, `nothing to fork (${r.reason}); waiting for the next turn`)
+      await publish($)
+      return
+    }
+    const read = r.usage.cache_read_input_tokens ?? 0
+    const created = r.usage.cache_creation_input_tokens ?? 0
+    if (!r.isAnswered && r.reason === 'api-error') {
+      errors += 1
+      await note($, `bump failed: API error ${r.status ?? 'no status'} (${r.error})`)
+      if (errors >= MAX_ERRORS) await stop($, `${errors} bumps in a row failed with an API error; stopping`)
+      return
+    }
+    // An empty reply or an abort still sent the prefix, so it counts.
+    errors = 0
+    bumps += 1
+    lastBumpAt = await $.clock.now()
+    lastActivityAt = lastBumpAt
+    await note($, `bump ${bumps}: cache read ${read} tokens, cache created ${created} tokens`)
+    // A keepalive that creates more cache than it reads found the cache cold and
+    // rebuilt it, warming nothing; repeating it would bill that write every interval.
+    if (created > read) {
+      await stop($, `bump ${bumps} rebuilt the cache (read ${read}, created ${created} tokens) instead of touching it; stopping`)
+      return
+    }
+    await publish($)
+  } finally {
+    bumping = false
+  }
 }
 
 // The analyser only lets `$` reach functions declared at the top of the module,
 // so the timer body lives here rather than inside register().
 const tick = async ($: any): Promise<void> => {
-  // A turn is running, or our own bump has not come back yet.
-  if (stopped || paused || awaitingReply || coldUntilNextTurn) return
+  if (stopped || paused || busy || bumping || coldUntilNextTurn) return
 
   const now = await $.clock.now()
   const idleMinutes = (now - lastActivityAt) / 60_000
   if (idleMinutes < config.idleMinutes) return
 
-  // The timer does not run while the machine sleeps, and a draft in the prompt
-  // box defers every tick, so a bump can arrive after the cache already expired.
-  // Past the TTL a bump cannot touch anything; it would only rebuild the cache.
+  // The timer does not run while the machine sleeps, so a bump can come due
+  // after the cache already expired. Past the TTL a bump cannot touch anything;
+  // it would only rebuild the cache.
   if (idleMinutes >= config.ttlMinutes) {
     coldUntilNextTurn = true
-    await $.ui.log(`idle ${Math.round(idleMinutes)}m, past the ${config.ttlMinutes}m cache TTL; the cache is already cold, not bumping until the next turn rebuilds it`)
+    await note($, `idle ${Math.round(idleMinutes)}m, past the ${config.ttlMinutes}m cache TTL; the cache is already cold, not bumping until the next turn rebuilds it`)
     await publish($)
     return
   }
@@ -97,21 +164,19 @@ const tick = async ($: any): Promise<void> => {
     return
   }
 
-  // Submitting while a draft sits in the prompt box would send it as the turn.
-  const box = await $.prompt.read()
-  if (box.text !== '') return
-
-  // Rebuilding a small cache costs less than paying a read every interval to hold it.
+  // Rebuilding a small cache costs less than paying a read every interval to
+  // hold it. The context only grows, so this waits for the next turn rather
+  // than stopping, which also covers a new session idle before its first turn.
   const usage = await $.session.usage()
   const tokens = usage.context.tokens ?? 0
   if (tokens < config.minContextTokens) {
-    await stop($, `context is only ${tokens} tokens; not worth warming`)
+    coldUntilNextTurn = true
+    await note($, `context is only ${tokens} tokens; not worth warming until it grows`)
+    await publish($)
     return
   }
 
-  awaitingReply = true
-  bumps += 1
-  await $.prompt.submit({ text: PING })
+  await bump($)
 }
 
 const start = async ($: any): Promise<void> => {
@@ -123,7 +188,7 @@ const start = async ($: any): Promise<void> => {
     pollSeconds: number(await $.env.get('KEEPWARM_POLL_SEC'), DEFAULTS.pollSeconds),
   }
   lastActivityAt = await $.clock.now()
-  timer = $.clock.every(config.pollSeconds * 1000, () => void tick($))
+  timer = $.clock.every(config.pollSeconds * 1000, () => void tick($).catch((err: unknown) => note($, `tick failed: ${String(err)}`)))
   await publish($)
   // Refused if another plugin already serves /keepwarm; the keepalive still runs.
   try {
@@ -133,7 +198,7 @@ const start = async ($: any): Promise<void> => {
       argumentHint: '[pause|resume|status]',
     })
   } catch (err) {
-    await $.ui.log(`/keepwarm not registered: ${String(err)}`)
+    await note($, `/keepwarm not registered: ${String(err)}`)
   }
 }
 
@@ -141,7 +206,7 @@ const status = async ($: any): Promise<string> => {
   const made = `${bumps} of ${config.maxBumps} bumps made`
   if (stopped) return `stopped: ${stopReason}. ${made}.`
   if (paused) return `paused. ${made}. /keepwarm resume turns it back on.`
-  if (coldUntilNextTurn) return `waiting: the cache went cold past the ${config.ttlMinutes}m TTL; bumps resume after your next turn. ${made}.`
+  if (coldUntilNextTurn) return `waiting for your next turn: the cache is cold, too small to hold, or out of date. ${made}.`
   const left = Math.max(0, Math.ceil((lastActivityAt + config.idleMinutes * 60_000 - (await $.clock.now())) / 60_000))
   return `on, next bump in about ${left}m (after ${config.idleMinutes}m idle). ${made}.`
 }
@@ -165,23 +230,12 @@ const command = async ($: any, args: string): Promise<{ text: string }> => {
   return { text: 'usage: /keepwarm [pause|resume|status]' }
 }
 
-// Any completed turn restarts the idle clock. When the turn that ended was our
-// own bump, its usage says whether the keepalive actually kept anything warm.
-const settle = async ($: any, wasOurs: boolean, usage: any): Promise<void> => {
+// A real main-thread turn restarts the idle clock and gives the fork a fresh
+// request to replay. A subagent's turns use their own cache, not the session's.
+const settle = async ($: any): Promise<void> => {
+  busy = false
   lastActivityAt = await $.clock.now()
-  awaitingReply = false
   coldUntilNextTurn = false
-  if (wasOurs && usage) {
-    const read = usage.cache_read_input_tokens ?? 0
-    const created = usage.cache_creation_input_tokens ?? 0
-    await $.ui.log(`bump ${bumps}: cache read ${read} tokens, cache created ${created} tokens`)
-    // A keepalive that creates more cache than it reads found the cache cold and
-    // rebuilt it, warming nothing; repeating it would bill that write every interval.
-    if (created > read) {
-      await stop($, `bump ${bumps} rebuilt the cache (read ${read}, created ${created} tokens) instead of touching it; stopping`)
-      return
-    }
-  }
   await publish($)
 }
 
@@ -191,28 +245,27 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('turn.complete', ($, e, next) => {
-    void settle($, awaitingReply, e.usage)
+  on('turn.start', ($, e, next) => {
+    busy = true
     return next(e)
   })
 
+  on('turn.complete', ($, e, next) => {
+    if (e.agentId === undefined) void settle($)
+    return next(e)
+  })
+
+  // The fork replays the last request the main thread sent, which after a
+  // compaction is the conversation from before it. Warming that would write the
+  // old prefix, so bumps wait for the first real turn on the compacted one.
+  on('session.compact', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined) {
+      coldUntilNextTurn = true
+      await publish($)
+    }
+    return result
+  })
+
   on('command.run', { command: 'keepwarm' }, ($, e) => command($, e.args))
-
-  // Draw the keepalive exchange as empty rows. The rewrite is display-only: the
-  // stored messages, and what the model reads, are untouched. Both hooks match on
-  // what the row itself carries, so a redraw or a scroll hides it again.
-  //
-  // ctrl+o is the view that shows everything, so the row passes through there.
-  on(
-    'ui.render',
-    { component: 'UserMessage', props: { origin: { kind: 'plugin', name: 'keepwarm' } } },
-    ($, e, next) =>
-      e.props.isExpanded ? next(e) : next({ ...e, props: { ...e.props, text: '' } }),
-  )
-
-  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) =>
-    bumps > 0 && e.props.text.trim() === '.'
-      ? next({ ...e, props: { ...e.props, text: '' } })
-      : next(e),
-  )
 }
